@@ -1,11 +1,13 @@
-import { WalletCards } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 export function Brand({ light = false }: { light?: boolean }) {
   return (
-    <Link to="/" className={`inline-flex items-center gap-2.5 text-lg font-bold tracking-tight ${light ? 'text-white' : 'text-slate-950 dark:text-white'}`}>
-      <span className="grid size-9 place-items-center rounded-xl bg-emerald-400 text-slate-950"><WalletCards size={19} /></span>
-      Meu<span className="-ml-2.5 text-emerald-400">Controle</span>
+    <Link to="/" aria-label="MeuControle — página inicial" className={`inline-flex items-center gap-3 text-[15px] font-semibold tracking-[-.02em] ${light ? 'text-white' : 'text-[#08080a] dark:text-white'}`}>
+      <span className="relative grid size-9 place-items-center overflow-hidden rounded-full border border-[#2e3038] bg-[#121317] text-xs font-medium text-white">
+        MC
+        <i aria-hidden="true" className="absolute -right-1 top-1 h-[1px] w-5 rotate-[-42deg] bg-[#cc9166]" />
+      </span>
+      <span>MeuControle<span className="text-[#cc9166]">.</span></span>
     </Link>
   )
 }

@@ -16,12 +16,42 @@ Sem as variáveis do Supabase, a interface oferece um modo local claramente iden
 
 ## Configurar Supabase
 
-1. Crie um projeto no Supabase.
-2. Execute `supabase/migrations/20261104000000_initial_schema.sql` pelo CLI ou SQL Editor.
-3. Defina `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` em `.env.local`.
-4. Cadastre as URLs permitidas de autenticação para o endereço local e o domínio de produção.
+Crie um projeto no Supabase e, para desenvolvimento local, preencha `.env.local` com a URL e uma chave pública do projeto:
+
+```dotenv
+VITE_SUPABASE_URL=https://SEU-PROJECT-REF.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+```
+
+Também é aceita a chave legada em `VITE_SUPABASE_ANON_KEY`. Chaves `service_role`, senha do banco e access token nunca podem usar o prefixo `VITE_`, pois tudo que começa com esse prefixo é incorporado ao JavaScript público.
+
+As migrações ficam em `supabase/migrations` e são aplicadas pela ação **Configurar Supabase**. O workflow também define no Supabase Auth:
+
+- Site URL: `https://azevedozp29.github.io/cofrinia/`;
+- redirects de produção em `https://azevedozp29.github.io/cofrinia/**`;
+- redirects locais em `http://localhost:5173/**` e `http://127.0.0.1:5173/**`.
+
+### Configuração do GitHub Actions
+
+Em **Settings → Secrets and variables → Actions**, cadastre:
+
+| Tipo | Nome | Uso |
+| --- | --- | --- |
+| Variable | `SUPABASE_PROJECT_REF` | Identificador do projeto, que aparece antes de `.supabase.co` |
+| Secret | `SUPABASE_ACCESS_TOKEN` | Token pessoal usado pelo CLI e pela Management API |
+| Secret | `SUPABASE_DB_PASSWORD` | Senha do banco do projeto |
+
+`SUPABASE_PROJECT_ID` também é aceito como nome alternativo para o project ref. Com os três valores acima, o deploy do Pages deriva a URL do projeto e obtém a chave pública pela Management API sem escrevê-la nos logs.
+
+Como alternativa, o build aceita diretamente `VITE_SUPABASE_URL` e uma destas chaves, como variable ou secret: `VITE_SUPABASE_PUBLISHABLE_KEY` ou `VITE_SUPABASE_ANON_KEY`. A chave publishable/anon é pública por definição; o workflow ainda a mascara para evitar cópias acidentais dos logs. Nunca cadastre uma chave `service_role` nesses nomes.
+
+Depois de salvar a configuração, execute **Actions → Configurar Supabase → Run workflow**. O workflow valida as migrações com `db push --dry-run`, aplica o schema, atualiza os redirects e inicia a publicação do Pages. Um push em `SAAS-FINANCE` que altere `supabase/config.toml` ou `supabase/migrations/**` também executa o processo de forma serializada.
+
+Se o SQL inicial já tiver sido aplicado manualmente sem registro no histórico de migrações, o dry-run interromperá a publicação. Nesse caso, compare o schema remoto com a migração antes de marcar qualquer versão como aplicada; não ignore a divergência nem reaplique `CREATE TYPE`/`CREATE TABLE` às cegas.
 
 A migração cria perfis, contas, categorias, movimentações e assinaturas, com valores em centavos, Row Level Security em todas as tabelas e teste de 72 horas iniciado no servidor. O cliente tem acesso somente leitura à assinatura; futuras confirmações de pagamento devem ocorrer em uma função segura por webhook.
+
+O site publicado fica em <https://azevedozp29.github.io/cofrinia/>. O workflow de Pages falha de forma explícita se não conseguir resolver a URL e uma chave pública do Supabase, evitando publicar acidentalmente uma versão em modo local.
 
 ## Validação
 

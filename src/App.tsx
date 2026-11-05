@@ -9,6 +9,7 @@ import { DashboardPage } from './pages/DashboardPage'
 import { TransactionsPage } from './pages/TransactionsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { PlansPage } from './pages/PlansPage'
+import { PasswordRecoveryPage } from './pages/PasswordRecoveryPage'
 
 function ProtectedArea() {
   const { user, loading } = useAuth()
@@ -24,6 +25,7 @@ export function App() {
       <Route path="/entrar" element={<AuthPage mode="signin" />} />
       <Route path="/cadastro" element={<AuthPage mode="signup" />} />
       <Route path="/recuperar" element={<AuthPage mode="reset" />} />
+      <Route path="/nova-senha" element={<PasswordRecoveryPage />} />
       <Route element={<ProtectedArea />}>
         <Route path="/onboarding" element={<OnboardingPage />} />
         <Route path="/app" element={<DashboardPage />} />

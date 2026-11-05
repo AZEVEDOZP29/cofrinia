@@ -36,6 +36,94 @@ jobs:
       - name: Testar
         run: npm test
 
+      - name: Preparar configuração pública do Supabase
+        env:
+          PUBLIC_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL || vars.SUPABASE_URL || secrets.SUPABASE_URL }}
+          PUBLIC_SUPABASE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY || secrets.VITE_SUPABASE_PUBLISHABLE_KEY || vars.VITE_SUPABASE_ANON_KEY || secrets.VITE_SUPABASE_ANON_KEY || vars.SUPABASE_PUBLISHABLE_KEY || secrets.SUPABASE_PUBLISHABLE_KEY || vars.SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF || vars.SUPABASE_PROJECT_ID || secrets.SUPABASE_PROJECT_REF || secrets.SUPABASE_PROJECT_ID }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          public_url="${PUBLIC_SUPABASE_URL}"
+          public_key="${PUBLIC_SUPABASE_KEY}"
+          project_ref="${SUPABASE_PROJECT_REF}"
+
+          if [[ -n "${project_ref}" && ! "${project_ref}" =~ ^[a-z0-9-]+$ ]]; then
+            echo "::error::SUPABASE_PROJECT_REF contém um formato inválido."
+            exit 1
+          fi
+
+          if [[ -z "${public_url}" && -n "${project_ref}" ]]; then
+            public_url="https://${project_ref}.supabase.co"
+          fi
+
+          if [[ -z "${public_key}" && -n "${SUPABASE_ACCESS_TOKEN}" && -n "${project_ref}" ]]; then
+            keys_file="$(mktemp)"
+            trap 'rm -f "${keys_file}"' EXIT
+            http_status="$(curl --silent --show-error \
+              --output "${keys_file}" \
+              --write-out '%{http_code}' \
+              --header "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+              "https://api.supabase.com/v1/projects/${project_ref}/api-keys")"
+
+            if [[ "${http_status}" =~ ^2[0-9][0-9]$ ]]; then
+              public_key="$(jq -r '
+                (if type == "array" then . else (.api_keys // .keys // []) end) as $keys
+                | (($keys | map(select(.name == "publishable" or .type == "publishable")) | first)
+                  // ($keys | map(select(.name == "anon" or .type == "anon")) | first)
+                  // {})
+                | (.api_key // .key // empty)
+              ' "${keys_file}")"
+            else
+              echo "::error::Não foi possível consultar a chave pública do Supabase (HTTP ${http_status})."
+              exit 1
+            fi
+          fi
+
+          missing=()
+          [[ -n "${public_url}" ]] || missing+=("VITE_SUPABASE_URL ou SUPABASE_PROJECT_REF")
+          [[ -n "${public_key}" ]] || missing+=("VITE_SUPABASE_PUBLISHABLE_KEY/VITE_SUPABASE_ANON_KEY ou SUPABASE_ACCESS_TOKEN")
+          if (( ${#missing[@]} )); then
+            printf '::error::Configuração do Supabase ausente: %s\n' "$(IFS=', '; echo "${missing[*]}")"
+            exit 1
+          fi
+
+          if [[ "${public_url}" != https://* ]]; then
+            echo "::error::A URL pública do Supabase deve usar HTTPS."
+            exit 1
+          fi
+          if [[ "${public_url}" == *$'\n'* || "${public_key}" == *$'\n'* ]]; then
+            echo "::error::A configuração pública do Supabase contém um valor inválido."
+            exit 1
+          fi
+          if [[ "${public_key}" == sb_secret_* ]]; then
+            echo "::error::Uma chave secreta do Supabase não pode ser incorporada ao site."
+            exit 1
+          fi
+
+          if [[ "${public_key}" == *.*.* ]]; then
+            jwt_payload="${public_key#*.}"
+            jwt_payload="${jwt_payload%%.*}"
+            jwt_payload="${jwt_payload//-/+}"
+            jwt_payload="${jwt_payload//_/\/}"
+            case $(( ${#jwt_payload} % 4 )) in
+              2) jwt_payload+="==" ;;
+              3) jwt_payload+="=" ;;
+            esac
+            jwt_role="$(printf '%s' "${jwt_payload}" | base64 --decode 2>/dev/null | jq -r '.role // empty' 2>/dev/null || true)"
+            if [[ "${jwt_role}" == "service_role" ]]; then
+              echo "::error::A chave service_role do Supabase não pode ser incorporada ao site."
+              exit 1
+            fi
+          fi
+
+          public_url="${public_url%/}"
+          echo "::add-mask::${public_key}"
+          printf 'VITE_SUPABASE_URL=%s\n' "${public_url}" >> "${GITHUB_ENV}"
+          printf 'VITE_SUPABASE_PUBLISHABLE_KEY=%s\n' "${public_key}" >> "${GITHUB_ENV}"
+
       - name: Gerar aplicação
         env:
           MEUCONTROLE_BASE_PATH: /cofrinia/

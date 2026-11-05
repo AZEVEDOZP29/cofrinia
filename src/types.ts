@@ -1,5 +1,6 @@
 export type TransactionType = 'income' | 'expense'
 export type TransactionStatus = 'paid' | 'received' | 'planned'
+export type SubscriptionStatus = 'trialing' | 'active' | 'past_due' | 'canceled' | 'expired'
 
 export interface Profile {
   id: string
@@ -8,8 +9,10 @@ export interface Profile {
   monthStartDay: number
   monthlyIncomeCents: number
   onboardingCompleted: boolean
+  subscriptionStatus: SubscriptionStatus
   trialStartedAt: string
   trialEndsAt: string
+  currentPeriodEndsAt: string | null
 }
 
 export interface Account {

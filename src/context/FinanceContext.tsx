@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { useAuth } from './AuthContext'
 import { makeId } from '../lib/finance'
 import { supabase } from '../lib/supabase'
-import type { Account, AccountInput, Category, CategoryInput, Profile, Transaction, TransactionInput } from '../types'
+import type { Account, AccountInput, Category, CategoryInput, Profile, SubscriptionStatus, Transaction, TransactionInput } from '../types'
 
 interface FinanceData {
   profile: Profile
@@ -46,8 +46,10 @@ function freshProfile(id: string, name = ''): Profile {
     monthStartDay: 1,
     monthlyIncomeCents: 0,
     onboardingCompleted: false,
+    subscriptionStatus: 'trialing',
     trialStartedAt: started.toISOString(),
     trialEndsAt: ends.toISOString(),
+    currentPeriodEndsAt: null,
   }
 }
 
@@ -60,6 +62,23 @@ function localInitialData(id: string, name: string): FinanceData {
   }
 }
 
+function normalizeLocalData(saved: string | null, id: string, name: string): FinanceData {
+  const initial = localInitialData(id, name)
+  if (!saved) return initial
+  const parsed = JSON.parse(saved) as FinanceData
+  return {
+    profile: { ...initial.profile, ...parsed.profile },
+    accounts: Array.isArray(parsed.accounts) ? parsed.accounts : [],
+    categories: Array.isArray(parsed.categories) ? parsed.categories : initial.categories,
+    transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
+  }
+}
+
+function messageFrom(cause: unknown) {
+  if (cause && typeof cause === 'object' && 'message' in cause && typeof cause.message === 'string') return cause.message
+  return 'Não foi possível carregar seus dados financeiros.'
+}
+
 const mapProfile = (row: Record<string, unknown>, trial?: Record<string, unknown>): Profile => ({
   id: String(row.id),
   name: String(row.name ?? ''),
@@ -67,8 +86,10 @@ const mapProfile = (row: Record<string, unknown>, trial?: Record<string, unknown
   monthStartDay: Number(row.month_start_day ?? 1),
   monthlyIncomeCents: Number(row.monthly_income_cents ?? 0),
   onboardingCompleted: Boolean(row.onboarding_completed),
+  subscriptionStatus: (trial?.status ?? 'trialing') as SubscriptionStatus,
   trialStartedAt: String(trial?.trial_started_at ?? row.created_at ?? new Date().toISOString()),
   trialEndsAt: String(trial?.trial_ends_at ?? new Date().toISOString()),
+  currentPeriodEndsAt: trial?.current_period_ends_at ? String(trial.current_period_ends_at) : null,
 })
 
 const mapAccount = (row: Record<string, unknown>): Account => ({
@@ -96,38 +117,46 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!user) return
+    let cancelled = false
     setLoading(true)
     setError('')
     if (user.isLocal || !supabase) {
       const saved = localStorage.getItem(localKey)
-      setData(saved ? JSON.parse(saved) as FinanceData : localInitialData(user.id, user.name))
+      try {
+        setData(normalizeLocalData(saved, user.id, user.name))
+      } catch {
+        setData(localInitialData(user.id, user.name))
+      }
       setLoading(false)
       return
     }
 
     void (async () => {
-      const [profileResult, accountsResult, categoriesResult, transactionsResult, subscriptionResult] = await Promise.all([
-        supabase.from('profiles').select('*').eq('id', user.id).single(),
-        supabase.from('accounts').select('*').order('created_at'),
-        supabase.from('categories').select('*').order('name'),
-        supabase.from('transactions').select('*').order('occurred_at', { ascending: false }),
-        supabase.from('subscriptions').select('*').eq('user_id', user.id).single(),
-      ])
-      const firstError = [profileResult, accountsResult, categoriesResult, transactionsResult]
-        .map((result) => result.error).find(Boolean)
-      if (firstError) {
-        setError(firstError.message)
-        setLoading(false)
-        return
+      try {
+        const [profileResult, accountsResult, categoriesResult, transactionsResult, subscriptionResult] = await Promise.all([
+          supabase.from('profiles').select('*').eq('id', user.id).single(),
+          supabase.from('accounts').select('*').order('created_at'),
+          supabase.from('categories').select('*').order('name'),
+          supabase.from('transactions').select('*').order('occurred_at', { ascending: false }),
+          supabase.from('subscriptions').select('*').eq('user_id', user.id).single(),
+        ])
+        const firstError = [profileResult, accountsResult, categoriesResult, transactionsResult, subscriptionResult]
+          .map((result) => result.error).find(Boolean)
+        if (firstError) throw firstError
+        if (cancelled) return
+        setData({
+          profile: mapProfile(profileResult.data as Record<string, unknown>, subscriptionResult.data as Record<string, unknown>),
+          accounts: (accountsResult.data ?? []).map((row) => mapAccount(row as Record<string, unknown>)),
+          categories: (categoriesResult.data ?? []).map((row) => mapCategory(row as Record<string, unknown>)),
+          transactions: (transactionsResult.data ?? []).map((row) => mapTransaction(row as Record<string, unknown>)),
+        })
+      } catch (cause) {
+        if (!cancelled) setError(messageFrom(cause))
+      } finally {
+        if (!cancelled) setLoading(false)
       }
-      setData({
-        profile: mapProfile(profileResult.data as Record<string, unknown>, subscriptionResult.data as Record<string, unknown> | undefined),
-        accounts: (accountsResult.data ?? []).map((row) => mapAccount(row as Record<string, unknown>)),
-        categories: (categoriesResult.data ?? []).map((row) => mapCategory(row as Record<string, unknown>)),
-        transactions: (transactionsResult.data ?? []).map((row) => mapTransaction(row as Record<string, unknown>)),
-      })
-      setLoading(false)
     })()
+    return () => { cancelled = true }
   }, [user, localKey])
 
   useEffect(() => {
@@ -151,27 +180,38 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       onboarding_completed: updates.onboardingCompleted,
     }
     const cleanPayload = Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined))
-    const { error: saveError } = await supabase.from('profiles').update(cleanPayload).eq('id', user!.id)
+    const { data: savedProfile, error: saveError } = await supabase
+      .from('profiles').update(cleanPayload).eq('id', user!.id).select('*').single()
     if (saveError) {
       setData((current) => ({ ...current, profile: previous }))
       reportError(saveError.message)
       throw saveError
     }
+    const canonical = mapProfile(savedProfile as Record<string, unknown>, {
+      status: previous.subscriptionStatus,
+      trial_started_at: previous.trialStartedAt,
+      trial_ends_at: previous.trialEndsAt,
+      current_period_ends_at: previous.currentPeriodEndsAt,
+    })
+    setData((current) => ({ ...current, profile: { ...current.profile, ...canonical } }))
   }, [data.profile, reportError, user])
 
   const addAccount = useCallback(async (input: AccountInput) => {
     const account: Account = { ...input, id: makeId(), createdAt: new Date().toISOString() }
     setData((current) => ({ ...current, accounts: [...current.accounts, account] }))
     if (!user?.isLocal && supabase) {
-      const { error: saveError } = await supabase.from('accounts').insert({
+      const { data: savedAccount, error: saveError } = await supabase.from('accounts').insert({
         id: account.id, user_id: user!.id, name: account.name, type: account.type,
         initial_balance_cents: account.initialBalanceCents,
-      })
+      }).select('*').single()
       if (saveError) {
         setData((current) => ({ ...current, accounts: current.accounts.filter((item) => item.id !== account.id) }))
         reportError(saveError.message)
         throw saveError
       }
+      const canonical = mapAccount(savedAccount as Record<string, unknown>)
+      setData((current) => ({ ...current, accounts: current.accounts.map((item) => item.id === account.id ? canonical : item) }))
+      return canonical
     }
     return account
   }, [reportError, user])
@@ -180,12 +220,16 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     const category: Category = { ...input, id: makeId() }
     setData((current) => ({ ...current, categories: [...current.categories, category] }))
     if (!user?.isLocal && supabase) {
-      const { error: saveError } = await supabase.from('categories').insert({ ...category, user_id: user!.id })
+      const { data: savedCategory, error: saveError } = await supabase
+        .from('categories').insert({ ...category, user_id: user!.id }).select('*').single()
       if (saveError) {
         setData((current) => ({ ...current, categories: current.categories.filter((item) => item.id !== category.id) }))
         reportError(saveError.message)
         throw saveError
       }
+      const canonical = mapCategory(savedCategory as Record<string, unknown>)
+      setData((current) => ({ ...current, categories: current.categories.map((item) => item.id === category.id ? canonical : item) }))
+      return canonical
     }
     return category
   }, [reportError, user])
@@ -209,13 +253,19 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         occurred_at: transaction.occurredAt, notes: transaction.notes, status: transaction.status,
       }
       const result = id
-        ? await supabase.from('transactions').update(payload).eq('id', id)
-        : await supabase.from('transactions').insert(payload)
+        ? await supabase.from('transactions').update(payload).eq('id', id).select('*').single()
+        : await supabase.from('transactions').insert(payload).select('*').single()
       if (result.error) {
         setData((current) => ({ ...current, transactions: previous }))
         reportError(result.error.message)
         throw result.error
       }
+      const canonical = mapTransaction(result.data as Record<string, unknown>)
+      setData((current) => ({
+        ...current,
+        transactions: current.transactions.map((item) => item.id === transaction.id ? canonical : item),
+      }))
+      return canonical
     }
     return transaction
   }, [data.transactions, reportError, user])
@@ -224,7 +274,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     const previous = data.transactions
     setData((current) => ({ ...current, transactions: current.transactions.filter((item) => item.id !== id) }))
     if (!user?.isLocal && supabase) {
-      const { error: deleteError } = await supabase.from('transactions').delete().eq('id', id)
+      const { error: deleteError } = await supabase.from('transactions').delete().eq('id', id).select('id').single()
       if (deleteError) {
         setData((current) => ({ ...current, transactions: previous }))
         reportError(deleteError.message)

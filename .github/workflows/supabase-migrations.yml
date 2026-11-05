@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: supabase-production-migrations
@@ -100,3 +101,9 @@ jobs:
           fi
 
           echo "URLs de autenticação configuradas."
+
+      - name: Publicar frontend configurado
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh workflow run deploy-pages.yml --ref "${GITHUB_REF_NAME}"

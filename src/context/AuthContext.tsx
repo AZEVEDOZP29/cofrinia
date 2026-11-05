@@ -16,12 +16,18 @@ interface AuthContextValue {
   signUp: (name: string, email: string, password: string) => Promise<string>
   signIn: (email: string, password: string) => Promise<void>
   resetPassword: (email: string) => Promise<void>
+  updatePassword: (password: string) => Promise<void>
   signOut: () => Promise<void>
   continueLocally: () => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 const LOCAL_USER_KEY = 'meucontrole:local-user'
+
+function appUrl(path: string) {
+  const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`
+  return new URL(`${base}${path.replace(/^\/+/, '')}`, window.location.origin).toString()
+}
 
 function fromSupabaseUser(user: User): AppUser {
   return {
@@ -39,20 +45,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!supabase) {
       const local = localStorage.getItem(LOCAL_USER_KEY)
-      if (local) setUser(JSON.parse(local) as AppUser)
+      if (local) {
+        try {
+          setUser(JSON.parse(local) as AppUser)
+        } catch {
+          localStorage.removeItem(LOCAL_USER_KEY)
+        }
+      }
       setLoading(false)
       return
     }
 
-    supabase.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user ? fromSupabaseUser(data.session.user) : null)
+    let active = true
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return
+      setUser(error || !data.session?.user ? null : fromSupabaseUser(data.session.user))
+      setLoading(false)
+    }).catch(() => {
+      if (!active) return
+      setUser(null)
       setLoading(false)
     })
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!active) return
       setUser(session?.user ? fromSupabaseUser(session.user) : null)
       setLoading(false)
     })
-    return () => data.subscription.unsubscribe()
+    return () => {
+      active = false
+      data.subscription.unsubscribe()
+    }
   }, [])
 
   const value = useMemo<AuthContextValue>(() => ({
@@ -64,7 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
-        options: { data: { name }, emailRedirectTo: `${window.location.origin}/app` },
+        options: { data: { name }, emailRedirectTo: appUrl('/app') },
       })
       if (error) throw error
       return data.session ? 'Conta criada com sucesso.' : 'Confira seu e-mail para confirmar a conta.'
@@ -77,8 +99,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async resetPassword(email) {
       if (!supabase) throw new Error('Configure o Supabase para recuperar a senha.')
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/perfil`,
+        redirectTo: appUrl('/nova-senha'),
       })
+      if (error) throw error
+    },
+    async updatePassword(password) {
+      if (!supabase) throw new Error('Configure o Supabase para alterar a senha.')
+      const { error } = await supabase.auth.updateUser({ password })
       if (error) throw error
     },
     async signOut() {

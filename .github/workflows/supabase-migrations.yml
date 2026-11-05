@@ -1,0 +1,102 @@
+name: Configurar Supabase
+
+on:
+  push:
+    branches: [SAAS-FINANCE]
+    paths:
+      - supabase/config.toml
+      - supabase/migrations/**
+      - .github/workflows/supabase-migrations.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-production-migrations
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Aplicar banco e autenticação
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      CONFIGURED_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF || vars.SUPABASE_PROJECT_ID || secrets.SUPABASE_PROJECT_REF || secrets.SUPABASE_PROJECT_ID }}
+      PUBLIC_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL || vars.SUPABASE_URL || secrets.SUPABASE_URL }}
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Validar credenciais
+        id: config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          project_ref="${CONFIGURED_PROJECT_REF}"
+          if [[ -z "${project_ref}" && "${PUBLIC_SUPABASE_URL}" =~ ^https://([a-z0-9-]+)\.supabase\.co/?$ ]]; then
+            project_ref="${BASH_REMATCH[1]}"
+          fi
+
+          if [[ -n "${project_ref}" && ! "${project_ref}" =~ ^[a-z0-9-]+$ ]]; then
+            echo "::error::SUPABASE_PROJECT_REF contém um formato inválido."
+            exit 1
+          fi
+
+          missing=()
+          [[ -n "${SUPABASE_ACCESS_TOKEN}" ]] || missing+=("SUPABASE_ACCESS_TOKEN")
+          [[ -n "${SUPABASE_DB_PASSWORD}" ]] || missing+=("SUPABASE_DB_PASSWORD")
+          [[ -n "${project_ref}" ]] || missing+=("SUPABASE_PROJECT_REF ou SUPABASE_PROJECT_ID")
+          if (( ${#missing[@]} )); then
+            printf '::error::Cadastre no GitHub: %s\n' "$(IFS=', '; echo "${missing[*]}")"
+            exit 1
+          fi
+
+          [[ -f supabase/config.toml ]] || {
+            echo "::error::O arquivo supabase/config.toml não foi encontrado."
+            exit 1
+          }
+
+          printf 'SUPABASE_PROJECT_REF=%s\n' "${project_ref}" >> "${GITHUB_ENV}"
+
+      - name: Instalar Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Vincular projeto
+        shell: bash
+        run: supabase link --project-ref "${SUPABASE_PROJECT_REF}" --password "${SUPABASE_DB_PASSWORD}"
+
+      - name: Validar migrações
+        shell: bash
+        run: supabase db push --linked --include-all --dry-run
+
+      - name: Aplicar migrações
+        shell: bash
+        run: supabase db push --linked --include-all --yes
+
+      - name: Configurar URLs de autenticação
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          response_file="$(mktemp)"
+          trap 'rm -f "${response_file}"' EXIT
+          http_status="$(curl --silent --show-error \
+            --output "${response_file}" \
+            --write-out '%{http_code}' \
+            --request PATCH \
+            --header "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+            --header 'Content-Type: application/json' \
+            --data '{"site_url":"https://azevedozp29.github.io/cofrinia/","uri_allow_list":"https://azevedozp29.github.io/cofrinia/**,http://localhost:5173/**,http://127.0.0.1:5173/**"}' \
+            "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/config/auth")"
+
+          if [[ ! "${http_status}" =~ ^2[0-9][0-9]$ ]]; then
+            echo "::error::Não foi possível configurar as URLs de autenticação (HTTP ${http_status})."
+            exit 1
+          fi
+
+          echo "URLs de autenticação configuradas."

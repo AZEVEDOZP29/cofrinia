@@ -39,9 +39,17 @@ Em **Settings → Secrets and variables → Actions**, cadastre:
 | --- | --- | --- |
 | Variable | `SUPABASE_PROJECT_REF` | Identificador do projeto, que aparece antes de `.supabase.co` |
 | Secret | `SUPABASE_ACCESS_TOKEN` | Token pessoal usado pelo CLI e pela Management API |
-| Secret | `SUPABASE_DB_PASSWORD` | Senha do banco do projeto |
+| Secret | `SUPABASE_DB_URL` | URI completa do Shared Session Pooler, usada pelo CLI para aplicar migrações por IPv4 |
 
 `SUPABASE_PROJECT_ID` também é aceito como nome alternativo para o project ref. Com os três valores acima, o deploy do Pages deriva a URL do projeto e obtém a chave pública pela Management API sem escrevê-la nos logs.
+
+Obtenha `SUPABASE_DB_URL` no botão **Connect** do projeto no Supabase, escolhendo **Shared Pooler → Session mode**. A URI precisa apontar para `*.pooler.supabase.com` na porta `5432`, no formato:
+
+```text
+postgresql://postgres.PROJECT_REF:SENHA@REGIAO.pooler.supabase.com:5432/postgres
+```
+
+Salve a URI completa como secret, nunca como variable. Substitua o marcador pela senha real do banco e aplique URL encoding caso ela contenha caracteres reservados. O workflow rejeita o Transaction Pooler da porta `6543` e não escreve a URI nos logs.
 
 Como alternativa, o build aceita diretamente `VITE_SUPABASE_URL` e uma destas chaves, como variable ou secret: `VITE_SUPABASE_PUBLISHABLE_KEY` ou `VITE_SUPABASE_ANON_KEY`. A chave publishable/anon é pública por definição; o workflow ainda a mascara para evitar cópias acidentais dos logs. Nunca cadastre uma chave `service_role` nesses nomes.
 

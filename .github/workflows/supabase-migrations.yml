@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       CONFIGURED_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF || vars.SUPABASE_PROJECT_ID || secrets.SUPABASE_PROJECT_REF || secrets.SUPABASE_PROJECT_ID }}
       PUBLIC_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL || vars.SUPABASE_URL || secrets.SUPABASE_URL }}
     steps:
@@ -48,10 +48,59 @@ jobs:
 
           missing=()
           [[ -n "${SUPABASE_ACCESS_TOKEN}" ]] || missing+=("SUPABASE_ACCESS_TOKEN")
-          [[ -n "${SUPABASE_DB_PASSWORD}" ]] || missing+=("SUPABASE_DB_PASSWORD")
+          [[ -n "${SUPABASE_DB_URL}" ]] || missing+=("SUPABASE_DB_URL")
           [[ -n "${project_ref}" ]] || missing+=("SUPABASE_PROJECT_REF ou SUPABASE_PROJECT_ID")
           if (( ${#missing[@]} )); then
             printf '::error::Cadastre no GitHub: %s\n' "$(IFS=', '; echo "${missing[*]}")"
+            exit 1
+          fi
+
+          if [[ "${SUPABASE_DB_URL}" == *$'\n'* || "${SUPABASE_DB_URL}" == *$'\r'* ]]; then
+            echo "::error::SUPABASE_DB_URL contém um valor inválido."
+            exit 1
+          fi
+
+          case "${SUPABASE_DB_URL}" in
+            postgres://*|postgresql://*) ;;
+            *)
+              echo "::error::SUPABASE_DB_URL deve ser uma URI PostgreSQL."
+              exit 1
+              ;;
+          esac
+
+          authority="${SUPABASE_DB_URL#*://}"
+          authority="${authority%%/*}"
+          if [[ "${authority}" != *@* ]]; then
+            echo "::error::SUPABASE_DB_URL não contém as credenciais do banco."
+            exit 1
+          fi
+
+          credentials="${authority%@*}"
+          db_password="${credentials#*:}"
+          if [[ "${credentials}" == "${db_password}" || -z "${db_password}" ]]; then
+            echo "::error::SUPABASE_DB_URL não contém a senha do banco."
+            exit 1
+          fi
+          echo "::add-mask::${db_password}"
+          unset db_password credentials
+
+          host_port="${authority##*@}"
+          if [[ "${host_port}" == *:6543 ]]; then
+            echo "::error::Use o Shared Session Pooler na porta 5432; a porta 6543 não é aceita para migrações."
+            exit 1
+          fi
+          if [[ "${host_port}" != *:5432 ]]; then
+            echo "::error::SUPABASE_DB_URL deve usar a porta 5432 do Shared Session Pooler."
+            exit 1
+          fi
+
+          pooler_host="${host_port%:5432}"
+          if [[ ! "${pooler_host}" =~ ^([a-z0-9-]+\.)+pooler\.supabase\.com$ ]]; then
+            echo "::error::SUPABASE_DB_URL deve apontar para o Shared Session Pooler do Supabase."
+            exit 1
+          fi
+          if [[ "${SUPABASE_DB_URL}" == *'[YOUR-PASSWORD]'* ]]; then
+            echo "::error::Substitua o marcador de senha na SUPABASE_DB_URL."
             exit 1
           fi
 
@@ -67,17 +116,13 @@ jobs:
         with:
           version: latest
 
-      - name: Vincular projeto
-        shell: bash
-        run: supabase link --project-ref "${SUPABASE_PROJECT_REF}" --password "${SUPABASE_DB_PASSWORD}"
-
       - name: Validar migrações
         shell: bash
-        run: supabase db push --linked --include-all --dry-run
+        run: supabase db push --db-url "${SUPABASE_DB_URL}" --include-all --dry-run
 
       - name: Aplicar migrações
         shell: bash
-        run: supabase db push --linked --include-all --yes
+        run: supabase db push --db-url "${SUPABASE_DB_URL}" --include-all --yes
 
       - name: Configurar URLs de autenticação
         shell: bash
